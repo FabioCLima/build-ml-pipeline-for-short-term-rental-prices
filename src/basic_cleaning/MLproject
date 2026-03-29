@@ -1,0 +1,33 @@
+name: basic_cleaning
+conda_env: conda.yml
+
+entry_points:
+  main:
+    parameters:
+
+      input_artifact:
+        description: Fully-qualified name of the input artifact in W&B
+        type: string
+
+      output_name:
+        description: Name of the output artifact to create in W&B
+        type: string
+
+      output_type:
+        description: Type of the output artifact
+        type: string
+
+      output_description:
+        description: Description of the output artifact
+        type: string
+
+      min_price:
+        description: Minimum price to include (filter out lower outliers)
+        type: float
+
+      max_price:
+        description: Maximum price to include (filter out upper outliers)
+        type: float
+
+    command: >-
+        python run.py --input_artifact {input_artifact} --output_name {output_name} --output_type {output_type} --output_description {output_description} --min_price {min_price} --max_price {max_price}

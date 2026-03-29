@@ -40,17 +40,17 @@ def go(args):
     df = df[idx].copy()
     logger.info("Rows after geolocation filter: %d", len(df))
 
-    df.to_csv("clean_sample.csv", index=False)
-    logger.info("Saved clean_sample.csv")
+    df.to_csv("clean_data.csv", index=False)
+    logger.info("Saved clean_data.csv")
 
     artifact = wandb.Artifact(
-        args.output_artifact,
+        args.output_name,
         type=args.output_type,
         description=args.output_description,
     )
-    artifact.add_file("clean_sample.csv")
+    artifact.add_file("clean_data.csv")
     run.log_artifact(artifact)
-    logger.info("Uploaded artifact %s", args.output_artifact)
+    logger.info("Uploaded artifact %s", args.output_name)
 
 
 if __name__ == "__main__":
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
-        "--output_artifact",
+        "--output_name",
         type=str,
         help="Name of the output artifact to create in W&B",
         required=True,
