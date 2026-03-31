@@ -1,38 +1,36 @@
 main:
   components_repository: "components"
-  # All the intermediate files will be copied to this directory at the end of the run.
-  # Set this to null if you are running in prod
   project_name: nyc_airbnb
   experiment_name: development
+  # Comma-separated list of steps to run, or "all" to run the full pipeline.
+  # Example: steps=basic_cleaning,data_check
   steps: all
 etl:
   sample: "sample1.csv"
-  min_price: 10 # dollars
-  max_price: 350 # dollars
+  min_price: 10  # dollars — listings below this threshold are treated as data errors
+  max_price: 350 # dollars — listings above this threshold are outliers that skew the model
 data_check:
+  # Maximum KL divergence allowed between the new data and the reference distribution.
+  # Exceeding this threshold signals a potential data drift issue.
   kl_threshold: 0.2
 modeling:
-  # Fraction of data to use for test (the remaining will be used for train and validation)
+  # Fraction of the full dataset held out as a final test set (never seen during training)
   test_size: 0.2
-  # Fraction of remaining data to use for validation
+  # Fraction of the remaining (train+val) data used for validation during training
   val_size: 0.2
-  # Fix this for reproducibility, change to have new splits
+  # Fixed seed for reproducible train/val/test splits across runs
   random_seed: 42
-  # Column to use for stratification (use "none" for no stratification)
+  # Stratify splits by borough to preserve the neighbourhood_group distribution
   stratify_by: "neighbourhood_group"
-  # Maximum number of features to consider for the TFIDF applied to the title of the
-  # insertion (the column called "name")
+  # Maximum vocabulary size for the TF-IDF applied to the listing "name" column.
+  # Tuned via Hydra sweep; higher values increase dimensionality with diminishing returns.
   max_tfidf_features: 30
-  # NOTE: you can put here any parameter that is accepted by the constructor of
-  # RandomForestRegressor. This is a subsample, but more could be added:
   random_forest:
     n_estimators: 100
     max_depth: 15
     min_samples_split: 4
     min_samples_leaf: 3
-    # Here -1 means all available cores
-    n_jobs: -1
+    n_jobs: -1  # use all available CPU cores
     criterion: squared_error
     max_features: 0.33
-    # DO not change the following
-    oob_score: true
+    oob_score: true  # out-of-bag score provides a free internal validation estimate

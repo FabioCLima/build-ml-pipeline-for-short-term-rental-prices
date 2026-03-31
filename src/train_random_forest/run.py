@@ -1,6 +1,11 @@
 #!/usr/bin/env python
 """
-This script trains a Random Forest
+Trains a Random Forest regressor on the NYC Airbnb dataset.
+
+Builds a full sklearn Pipeline covering preprocessing (ordinal/nominal encoding,
+zero imputation, date-to-days feature, TF-IDF on listing name) and the Random
+Forest model itself. Logs R² and MAE to W&B and exports the pipeline as an
+MLflow sklearn artifact for reproducible inference.
 """
 import argparse
 import logging
@@ -43,19 +48,16 @@ def go(args):
     run = wandb.init(job_type="train_random_forest")
     run.config.update(args)
 
-    # Get the Random Forest configuration and update W&B
+    # Load RF hyperparameters from the JSON file produced by main.py and
+    # sync them to W&B so every run is fully reproducible from its config alone.
     with open(args.rf_config) as fp:
         rf_config = json.load(fp)
     run.config.update(rf_config)
 
-    # Fix the random seed for the Random Forest, so we get reproducible results
+    # Pin the random seed in the RF config so results are deterministic
     rf_config['random_state'] = args.random_seed
 
-    ######################################
-    # Use run.use_artifact(...).file() to get the train and validation artifact (args.trainval_artifact)
-    # and save the returned path in train_local_path
     trainval_local_path = run.use_artifact(args.trainval_artifact).file()
-    ######################################
 
     X = pd.read_csv(trainval_local_path)
     y = X.pop("price")  # this removes the column "price" from X and puts it into y
@@ -70,15 +72,10 @@ def go(args):
 
     sk_pipe, processed_features = get_inference_pipeline(rf_config, args.max_tfidf_features)
 
-    # Then fit it to the X_train, y_train data
     logger.info("Fitting")
-
-    ######################################
-    # Fit the pipeline sk_pipe by calling the .fit method on X_train and y_train
     sk_pipe.fit(X_train, y_train)
-    ######################################
 
-    # Compute r2 and MAE
+    # Evaluate on the validation split
     logger.info("Scoring")
     r_squared = sk_pipe.score(X_val, y_val)
 
@@ -90,18 +87,15 @@ def go(args):
 
     logger.info("Exporting model")
 
-    # Save model package in the MLFlow sklearn format
+    # Remove any stale export before saving the new one
     if os.path.exists("random_forest_dir"):
         shutil.rmtree("random_forest_dir")
 
-    ######################################
-    # Save the sk_pipe pipeline as a mlflow.sklearn model in the directory "random_forest_dir"
-    # HINT: use mlflow.sklearn.save_model
+    # Save as MLflow sklearn format so the model can be loaded with mlflow.sklearn.load_model
     mlflow.sklearn.save_model(sk_pipe, "random_forest_dir")
-    ######################################
 
-    ######################################
-    # Upload the model we just exported to W&B
+    # Upload the full sklearn pipeline (preprocessor + model) as a versioned W&B artifact,
+    # attaching the RF hyperparameters as metadata for traceability.
     artifact = wandb.Artifact(
         args.output_artifact,
         type="model_export",
@@ -110,19 +104,12 @@ def go(args):
     )
     artifact.add_dir("random_forest_dir")
     run.log_artifact(artifact)
-    ######################################
 
-    # Plot feature importance
     fig_feat_imp = plot_feature_importance(sk_pipe, processed_features)
 
-    ######################################
-    # Here we save r_squared under the "r2" key
     run.summary['r2'] = r_squared
-    # Now log the variable "mae" under the key "mae".
     run.summary['mae'] = mae
-    ######################################
 
-    # Upload to W&B the feture importance visualization
     run.log(
         {
           "feature_importance": wandb.Image(fig_feat_imp),
@@ -131,13 +118,12 @@ def go(args):
 
 
 def plot_feature_importance(pipe, feat_names):
-    # We collect the feature importance for all non-nlp features first
+    # Aggregate all non-NLP feature importances individually, then collapse the
+    # TF-IDF dimensions into a single "name" importance for a cleaner chart.
     feat_imp = pipe["random_forest"].feature_importances_[: len(feat_names)-1]
-    # For the NLP feature we sum across all the TF-IDF dimensions into a global
-    # NLP importance
     nlp_importance = sum(pipe["random_forest"].feature_importances_[len(feat_names) - 1:])
-    feat_imp = np.asarray(np.append(feat_imp, nlp_importance))  # Using np.asarray for future compatibility
-    fig_feat_imp, sub_feat_imp = plt.subplots(figsize=(10, 10), layout='constrained')  # Using constrained layout
+    feat_imp = np.asarray(np.append(feat_imp, nlp_importance))
+    fig_feat_imp, sub_feat_imp = plt.subplots(figsize=(10, 10), layout='constrained')
     sub_feat_imp.bar(np.arange(feat_imp.shape[0]), feat_imp, color="r", align="center")
     sub_feat_imp.set_xticks(np.arange(feat_imp.shape[0]))
     sub_feat_imp.set_xticklabels(feat_names, rotation=90)
@@ -145,28 +131,22 @@ def plot_feature_importance(pipe, feat_names):
 
 
 def get_inference_pipeline(rf_config, max_tfidf_features):
-    # Let's handle the categorical features first
-    # Ordinal categorical are categorical values for which the order is meaningful, for example
-    # for room type: 'Entire home/apt' > 'Private room' > 'Shared room'
+    # Ordinal encoding for room_type: the ordering Entire home > Private room > Shared room
+    # carries real price signal that ordinal encoding preserves.
     ordinal_categorical = ["room_type"]
     non_ordinal_categorical = ["neighbourhood_group"]
-    # NOTE: we do not need to impute room_type because the type of the room
-    # is mandatory on the websites, so missing values are not possible in production
-    # (nor during training). That is not true for neighbourhood_group
+
+    # room_type is mandatory on Airbnb, so no imputation is needed.
+    # neighbourhood_group can be missing and is imputed with the most frequent borough.
     ordinal_categorical_preproc = OrdinalEncoder()
 
-    ######################################
-    # Build a pipeline with two steps:
-    # 1 - A SimpleImputer(strategy="most_frequent") to impute missing values
-    # 2 - A OneHotEncoder() step to encode the variable
     non_ordinal_categorical_preproc = make_pipeline(
         SimpleImputer(strategy="most_frequent"),
         OneHotEncoder(),
     )
-    ######################################
 
-    # Let's impute the numerical columns to make sure we can handle missing values
-    # (note that we do not scale because the RF algorithm does not need that)
+    # Zero-impute numerical columns: these are counts/coordinates where 0 is a safe
+    # default and Random Forest does not require scaling.
     zero_imputed = [
         "minimum_nights",
         "number_of_reviews",
@@ -178,16 +158,15 @@ def get_inference_pipeline(rf_config, max_tfidf_features):
     ]
     zero_imputer = SimpleImputer(strategy="constant", fill_value=0)
 
-    # A MINIMAL FEATURE ENGINEERING step:
-    # we create a feature that represents the number of days passed since the last review
-    # First we impute the missing review date with an old date (because there hasn't been
-    # a review for a long time), and then we create a new feature from it,
+    # Engineer "days since last review": listings with no review history are imputed
+    # with a far-past date so the resulting delta is large, signalling low activity.
     date_imputer = make_pipeline(
         SimpleImputer(strategy='constant', fill_value='2010-01-01'),
         FunctionTransformer(delta_date_feature, check_inverse=False, validate=False)
     )
 
-    # Some minimal NLP for the "name" column
+    # Lightweight NLP on the listing name: TF-IDF captures keywords correlated with
+    # price (e.g. "luxury", "studio", "cozy") without requiring a deep text model.
     reshape_to_1d = FunctionTransformer(np.reshape, kw_args={"shape": -1})
     name_tfidf = make_pipeline(
         SimpleImputer(strategy="constant", fill_value=""),
@@ -199,7 +178,6 @@ def get_inference_pipeline(rf_config, max_tfidf_features):
         ),
     )
 
-    # Let's put everything together
     preprocessor = ColumnTransformer(
         transformers=[
             ("ordinal_cat", ordinal_categorical_preproc, ordinal_categorical),
@@ -208,19 +186,15 @@ def get_inference_pipeline(rf_config, max_tfidf_features):
             ("transform_date", date_imputer, ["last_review"]),
             ("transform_name", name_tfidf, ["name"])
         ],
-        remainder="drop",  # This drops the columns that we do not transform
+        remainder="drop",  # Drop columns not explicitly listed above
     )
 
     processed_features = ordinal_categorical + non_ordinal_categorical + zero_imputed + ["last_review", "name"]
 
-    # Create random forest
     random_forest = RandomForestRegressor(**rf_config)
 
-    ######################################
-    # Create the inference pipeline. The pipeline must have 2 steps: a step called "preprocessor" applying the
-    # ColumnTransformer instance that we saved in the `preprocessor` variable, and a step called "random_forest"
-    # with the random forest instance that we just saved in the `random_forest` variable.
-    # HINT: Use the explicit Pipeline constructor so you can assign the names to the steps, do not use make_pipeline
+    # Named steps allow downstream access to internals, e.g.
+    # pipe["random_forest"].feature_importances_ used in plot_feature_importance.
     sk_pipe = Pipeline([
         ("preprocessor", preprocessor),
         ("random_forest", random_forest),

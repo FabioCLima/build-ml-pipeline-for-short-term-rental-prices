@@ -14,9 +14,21 @@ An end-to-end, reproducible ML pipeline for predicting short-term rental prices 
 
 ---
 
-## Overview
+## About This Project
 
-A property management company receives new Airbnb listing data weekly and needs to retrain a price estimation model at the same cadence. This project implements a fully automated, reproducible pipeline that handles data ingestion, cleaning, validation, training, hyperparameter optimization, and model testing — all tracked in W&B.
+A property management company receives new Airbnb listing data every week and needs to retrain a price estimation model at the same cadence. I built this project to demonstrate how MLOps principles solve that operational problem.
+
+The core challenge is not just training a good model — it is making the entire workflow **reproducible**, **auditable**, and **retrainable on demand**. Every artifact (raw data, cleaned data, trained model) is versioned in Weights & Biases. Every run is tracked with MLflow. Every configuration value — from price bounds to hyperparameters — is managed by Hydra and can be overridden from the command line without touching the code.
+
+### What I built
+
+- A **6-step pipeline** orchestrated by MLflow Projects, where each step runs in its own isolated Conda environment.
+- A **data validation layer** using pytest fixtures that pull live W&B artifacts, testing for schema consistency, geographic boundaries, price ranges, and neighbourhood distribution drift (KL divergence).
+- A **scikit-learn inference pipeline** that bundles all preprocessing (ordinal encoding, one-hot encoding, zero imputation, date-to-days feature engineering, TF-IDF on listing names) with the Random Forest model into a single serializable object — ensuring identical transformations at training and inference time.
+- A **hyperparameter sweep** using Hydra's multi-run feature to evaluate 15 configurations, with the best model promoted to the `prod` tag in W&B.
+- A **retraining workflow**: running `mlflow run . -P hydra_options="etl.sample=sample2.csv"` on any tagged release ingests new data and produces a new versioned model without any code changes.
+
+---
 
 ## Pipeline Architecture
 
